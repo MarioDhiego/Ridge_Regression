@@ -4,13 +4,15 @@ library(caret)
 library(glmnet)
 library(car)
 library(corrplot)
+library(ggplot2)
+library(reshape2)
 
 # Ler os dados
 dados <- read_excel("dados_pinus.xlsx")
 
 #------------------ Modelo Ridge Completo ----------------------------#
 set.seed(123)
-train_index <- createDataPartition(dados$VOLUME, p = 0.7, list = FALSE)
+train_index <- createDataPartition(dados$VOLUME, p = 0.9, list = FALSE)
 dados_treino <- dados[train_index, ]
 dados_teste <- dados[-train_index, ]
 
@@ -49,13 +51,47 @@ cat("\nDesempenho do modelo Ridge (com todas as variáveis):\n")
 cat("R²:", R2_ridge, "\nRMSE:", rmse_ridge, "\nMAE:", mae_ridge, "\n")
 
 modelo_ridge_seq <- glmnet(x_train, y_train, alpha = 0, standardize = TRUE)
-plot(modelo_ridge_seq, xvar = "lambda", label = TRUE,
-     main = "Ridge Trace Plot: Coeficientes vs log(Lambda)",
-     xlab = "log(Lambda)", ylab = "Coeficientes")
-abline(v = log(best_lambda_ridge), col = "red", lty = 2)
 
 
-#-----------------------------------------------------------------------#
+# Extrair os coeficientes do modelo Ridge
+coefs <- as.matrix(modelo_ridge_seq$beta)
+lambdas <- modelo_ridge_seq$lambda
+df_coef <- as.data.frame(t(coefs))
+df_coef$lambda <- log(lambdas)  # log(lambda)
+
+# Transformar para formato longo (long format)
+df_long <- melt(df_coef, id.vars = "lambda", 
+                variable.name = "Variavel", 
+                value.name = "Coeficiente")
+
+#Plot com ggplot2
+ggplot(df_long, aes(x = lambda, y = Coeficiente, color = Variavel)) +
+  geom_line(size = 1.2, alpha = 0.9) +  # Linhas suaves e grossas
+  geom_vline(xintercept = log(best_lambda_ridge), 
+             color = "red", linetype = "dashed", size = 1) +
+  labs(
+    title = "Ridge Trace Plot",
+    subtitle = "Com todas as variáveis preditoras",
+    x = expression(log(lambda)),
+    y = "Coeficientes"
+  ) +
+  scale_color_brewer(palette = "Dark2") +  # Paleta de cores agradável
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 10),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
+#------------------------------------------------------------------------------#
+
+
+
+
+#------------------------------------------------------------------------------#
 # Modelo Ridge sem (Area Basal)
 
 # Remover a variável AREA_BASAL
@@ -63,7 +99,7 @@ dados_sem_area <- dados %>% select(-AREA_BASAL)
 
 # Dividir em treino/teste
 set.seed(123)
-train_index2 <- createDataPartition(dados_sem_area$VOLUME, p = 0.7, list = FALSE)
+train_index2 <- createDataPartition(dados_sem_area$VOLUME, p = 0.9, list = FALSE)
 dados_treino2 <- dados_sem_area[train_index2, ]
 dados_teste2 <- dados_sem_area[-train_index2, ]
 
@@ -77,7 +113,9 @@ y_test2 <- dados_teste2$VOLUME
 # Ridge com CV sem Área Basal
 cv_ridge2 <- cv.glmnet(x_train2, y_train2, alpha = 0, standardize = TRUE)
 best_lambda_ridge2 <- cv_ridge2$lambda.min
-modelo_ridge2 <- glmnet(x_train2, y_train2, alpha = 0, lambda = best_lambda_ridge2, standardize = TRUE)
+modelo_ridge2 <- glmnet(x_train2, y_train2, alpha = 0, 
+                        lambda = best_lambda_ridge2, 
+                        standardize = TRUE)
 
 # Predição e avaliação
 y_pred_ridge2 <- predict(modelo_ridge2, s = best_lambda_ridge2, newx = x_test2)
@@ -87,7 +125,73 @@ mae_ridge2 <- mean(abs(y_test2 - y_pred_ridge2))
 
 cat("\nRidge SEM Área Basal:\n")
 cat("R²:", R2_ridge2, "\nRMSE:", rmse_ridge2, "\nMAE:", mae_ridge2, "\n")
-#-----------------------------------------------------------------------#
+
+# Ajusta o modelo Ridge
+modelo_ridge2 <- glmnet(x_train2, y_train2, alpha = 0, standardize = TRUE)
+
+# Extrai os coeficientes
+coefs <- as.matrix(modelo_ridge2$beta)
+lambdas <- modelo_ridge2$lambda
+df_coef <- as.data.frame(t(coefs))
+df_coef$lambda <- log(lambdas)  # log(lambda)
+df_long <- melt(df_coef, id.vars = "lambda", variable.name = "Variavel", value.name = "Coeficiente")
+
+# Gráfico customizado com ggplot2
+# Gráfico customizado com estética refinada
+ggplot(df_long, aes(x = lambda, y = Coeficiente, color = Variavel)) +
+  geom_line(size = 1.2, alpha = 0.9) +  # Linhas mais espessas e levemente transparentes
+  geom_vline(xintercept = log(best_lambda_ridge2), 
+             color = "red", linetype = "dashed", size = 1) +
+  labs(
+    title = "Ridge Trace Plot",
+    subtitle = "Modelo Ridge sem a variável Área Basal",
+    x = expression(log(lambda)),
+    y = "Coeficientes dos preditores"
+  ) +
+  scale_color_brewer(palette = "Dark2") +  # Paleta de cores suave
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
+
+
+
+#------------------------------------------------------------------------------------------------#
+# Gráfico de Validação Cruzada
+#Mostra o erro médio de validação (MSE) para cada valor de lambda.
+
+plot(cv_ridge)
+
+
+
+vif_model <- lm(VOLUME ~ ., data = dados_treino)
+vif(vif_model)
+
+
+#------------------------------------------------------------------------------------------------#
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #------------------ Modelo Ridge (sem DAP) ----------------------------#
 # Remover DAP
@@ -95,7 +199,7 @@ dados_sem_dap <- dados %>% select(-DAP)
 
 # Dividir dados em treino e teste
 set.seed(123)
-train_idx_dap <- createDataPartition(dados_sem_dap$VOLUME, p = 0.7, list = FALSE)
+train_idx_dap <- createDataPartition(dados_sem_dap$VOLUME, p = 0.8, list = FALSE)
 dados_treino_dap <- dados_sem_dap[train_idx_dap, ]
 dados_teste_dap  <- dados_sem_dap[-train_idx_dap, ]
 
@@ -170,7 +274,7 @@ cat("R²:", R2_dap_ab, "\nRMSE:", rmse_dap_ab, "\nMAE:", mae_dap_ab, "\n")
 #--------------- Modelo Lasso Geral --------------------------------------------#
 # Preparar dados completos
 set.seed(123)
-train_index_lasso <- createDataPartition(dados$VOLUME, p = 0.7, list = FALSE)
+train_index_lasso <- createDataPartition(dados$VOLUME, p = 0.8, list = FALSE)
 dados_treino_lasso <- dados[train_index_lasso, ]
 dados_teste_lasso  <- dados[-train_index_lasso, ]
 
@@ -207,7 +311,7 @@ dados_lasso_ab <- dados %>% select(-AREA_BASAL)
 
 # Dividir treino/teste
 set.seed(123)
-train_index_lasso_ab <- createDataPartition(dados_lasso_ab$VOLUME, p = 0.7, list = FALSE)
+train_index_lasso_ab <- createDataPartition(dados_lasso_ab$VOLUME, p = 0.8, list = FALSE)
 dados_treino_lasso_ab <- dados_lasso_ab[train_index_lasso_ab, ]
 dados_teste_lasso_ab  <- dados_lasso_ab[-train_index_lasso_ab, ]
 
@@ -249,7 +353,7 @@ dados_lasso_dap <- dados %>% select(-DAP)
 
 # Dividir treino/teste
 set.seed(123)
-train_index_lasso_dap <- createDataPartition(dados_lasso_dap$VOLUME, p = 0.7, list = FALSE)
+train_index_lasso_dap <- createDataPartition(dados_lasso_dap$VOLUME, p = 0.8, list = FALSE)
 dados_treino_lasso_dap <- dados_lasso_dap[train_index_lasso_dap, ]
 dados_teste_lasso_dap  <- dados_lasso_dap[-train_index_lasso_dap, ]
 
@@ -338,7 +442,7 @@ library(dplyr)
 set.seed(123)
 
 # Dividir dados em treino (70%) e teste (30%)
-train_idx <- createDataPartition(dados$VOLUME, p = 0.7, list = FALSE)
+train_idx <- createDataPartition(dados$VOLUME, p = 0.8, list = FALSE)
 dados_treino <- dados[train_idx, ]
 dados_teste  <- dados[-train_idx, ]
 
@@ -412,7 +516,7 @@ formula <- as.formula(paste("VOLUME ~", paste(vars_selecionadas, collapse = " + 
 
 # Divisão treino/teste
 set.seed(123)
-train_index <- createDataPartition(dados$VOLUME, p = 0.7, list = FALSE)
+train_index <- createDataPartition(dados$VOLUME, p = 0.8, list = FALSE)
 dados_treino <- dados[train_index, ]
 dados_teste  <- dados[-train_index, ]
 
