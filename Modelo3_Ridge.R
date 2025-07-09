@@ -1,3 +1,4 @@
+
 #------------------------------------------------------------------------------#
 # - Pacotes
 library(readxl)
@@ -12,7 +13,8 @@ library(ggplot2)
 library(reshape2)
 library(psych)
 library(GGally)
-library(randomForest)
+library(xgboost)
+#library(randomForest)
 #------------------------------------------------------------------------------#
 
 #------------------------------------------------------------------------------#
@@ -362,8 +364,8 @@ logLik_ridge <- -n / 2 * (log(2 * pi) + log(sigma2) + 1)
 df_ridge <- modelo_ridge_dap$df
 
 # AIC e BIC
-aic_ridge <- -2 * logLik_ridge + 2 * df_ridge
-bic_ridge <- -2 * logLik_ridge + log(n) * df_ridge
+aic_ridge_dap <- -2 * logLik_ridge + 2 * df_ridge
+bic_ridge_dap <- -2 * logLik_ridge + log(n) * df_ridge
 
 
 cat("\nModelo Ridge SEM DAP:\n")
@@ -371,8 +373,8 @@ cat("R² =", R2_dap,
     "\nRMSE =", rmse_dap, 
     "\nMAE =", mae_dap,
     "\nMAPE =", mape_dap,
-    "\nAIC  =", aic_ridge,
-    "\nBIC  =", bic_ridge
+    "\nAIC  =", aic_ridge_dap,
+    "\nBIC  =", bic_ridge_dap
     )
 
 
@@ -472,8 +474,8 @@ sigma2_ab <- rss_ab / n
 logLik_ridge_ab <- -n / 2 * (log(2 * pi) + log(sigma2_ab) + 1)
 
 df_ridge_ab <- modelo_ridge_dap_ab$df
-aic_ridge_ab <- -2 * logLik_ridge_ab + 2 * df_ridge_ab
-bic_ridge_ab <- -2 * logLik_ridge_ab + log(n) * df_ridge_ab
+aic_ridge_dap_ab <- -2 * logLik_ridge_ab + 2 * df_ridge_ab
+bic_ridge_dap_ab <- -2 * logLik_ridge_ab + log(n) * df_ridge_ab
 
 # Exibir resultados
 cat("\nModelo Ridge SEM DAP e SEM Área Basal:\n")
@@ -481,8 +483,8 @@ cat("R²:", R2_dap_ab,
     "\nRMSE:", rmse_dap_ab, 
     "\nMAE:", mae_dap_ab,
     "\nMAPE:", mape_dap_ab,
-    "\nAIC:", aic_ridge_ab,
-    "\nBIC:", bic_ridge_ab
+    "\nAIC:", aic_ridge_dap_ab,
+    "\nBIC:", bic_ridge_dap_ab
 )
 
 
@@ -527,13 +529,12 @@ ggplot(df_long_ab, aes(x = log_lambda, y = Coeficiente, color = Variavel)) +
     panel.grid.minor = element_blank(),
     panel.grid.major.y = element_line(color = "gray85")
   )
-
-
 #------------------------------------------------------------------------------#
 
 
-#--------------- Modelo Lasso Geral --------------------------------------------#
+#--------------- Modelo Lasso Geral -------------------------------------------#
 # Preparar Dados Completos
+
 set.seed(123)
 train_index_lasso <- createDataPartition(dados$VOLUME, p = 0.9, list = FALSE)
 dados_treino_lasso <- dados[train_index_lasso, ]
@@ -552,40 +553,90 @@ modelo_lasso <- glmnet(x_train_lasso, y_train_lasso, alpha = 1, lambda = best_la
 
 # Predição no teste
 y_pred_lasso <- predict(modelo_lasso, s = best_lambda_lasso, newx = x_test_lasso)
+
 R2_lasso <- cor(y_test_lasso, y_pred_lasso)^2
 rmse_lasso <- sqrt(mean((y_test_lasso - y_pred_lasso)^2))
 mae_lasso <- mean(abs(y_test_lasso - y_pred_lasso))
 mape_lasso <- mean(abs((y_test_lasso - y_pred_lasso) / y_test_lasso)) * 100
 
-
-# Variáveis selecionadas
+# Variáveis selecionadas (diferentes de zero)
 coef_lasso <- coef(modelo_lasso)
 variaveis_lasso <- rownames(coef_lasso)[coef_lasso[, 1] != 0 & rownames(coef_lasso) != "(Intercept)"]
 
+# ----- AIC e BIC -----
+n <- length(y_train_lasso)
+y_fitted_lasso <- predict(modelo_lasso, s = best_lambda_lasso, newx = x_train_lasso)
+rss_lasso <- sum((y_train_lasso - y_fitted_lasso)^2)
+sigma2_lasso <- rss_lasso / n
+logLik_lasso <- -n / 2 * (log(2 * pi) + log(sigma2_lasso) + 1)
+
+df_lasso <- modelo_lasso$df  # graus de liberdade = número de coeficientes ≠ 0
+aic_lasso <- -2 * logLik_lasso + 2 * df_lasso
+bic_lasso <- -2 * logLik_lasso + log(n) * df_lasso
+
+# Resultados
 cat("Lasso COM todas as variáveis:\n")
 cat("R²:", R2_lasso, 
     "\nRMSE:", rmse_lasso, 
     "\nMAE:", mae_lasso,
-    "\nMAPE =", mape_lasso
-    )
-cat("Variáveis selecionadas:", paste(variaveis_lasso, collapse = ", "), "\n")
+    "\nMAPE =", mape_lasso,
+    "\nAIC =", aic_lasso,
+    "\nBIC =", bic_lasso
+)
+cat("\nVariáveis selecionadas:", paste(variaveis_lasso, collapse = ", "), "\n")
+
+
+# Ajustar Lasso com sequência de lambdas
+lasso_seq <- glmnet(x_train_lasso, y_train_lasso, alpha = 1, standardize = TRUE)
+
+# Obter coeficientes e log(lambda)
+coefs_lasso_matrix <- as.matrix(lasso_seq$beta)
+lambdas_lasso <- lasso_seq$lambda
+log_lambda_lasso <- log(lambdas_lasso)
+
+# Transpor e criar data frame com log(lambda)
+df_coefs_lasso <- as.data.frame(t(coefs_lasso_matrix))
+df_coefs_lasso$log_lambda <- log_lambda_lasso
+
+# Transformar para formato longo (tidy)
+df_long_lasso <- df_coefs_lasso %>%
+  pivot_longer(cols = -log_lambda, names_to = "Variavel", values_to = "Coeficiente")
+
+# Lasso Plot com ggplot2
+ggplot(df_long_lasso, aes(x = log_lambda, 
+                          y = Coeficiente, 
+                          color = Variavel)) +
+  geom_line(size = 1.2, alpha = 0.9) +               # Linhas suaves e grossas
+  geom_vline(xintercept = log(best_lambda_lasso), 
+             linetype = "dashed", color = "red") +
+  labs(
+    title = "Lasso Trace Plot",
+    subtitle = "Modelo Lasso Completo",
+    x = expression(log(lambda)),
+    y = "Coeficiente"
+  ) +
+  scale_color_brewer(palette = "Dark2") +  # Paleta de cores suave
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
+
+# VIF TRACE PLOT
+
+
+
+#------------------------------------------------------------------------------#
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-#--------------- Modelo Lasso (-Area Basal) --------------------------------------------#
+#--------------- Modelo Lasso (-Area Basal) -----------------------------------#
 # Remover AREA_BASAL
 dados_lasso_ab <- dados %>% select(-AREA_BASAL)
 
@@ -613,24 +664,87 @@ modelo_lasso_ab <- glmnet(x_train_lasso_ab, y_train_lasso_ab,
 
 # Predição e métricas
 y_pred_lasso_ab <- predict(modelo_lasso_ab, s = best_lambda_lasso_ab, newx = x_test_lasso_ab)
+
 R2_lasso_ab <- cor(y_test_lasso_ab, y_pred_lasso_ab)^2
 rmse_lasso_ab <- sqrt(mean((y_test_lasso_ab - y_pred_lasso_ab)^2))
 mae_lasso_ab <- mean(abs(y_test_lasso_ab - y_pred_lasso_ab))
-mape_lasso_ab <- mean(abs((y_test_lasso_ab - y_pred_lasso_ab) / y_test2)) * 100
+mape_lasso_ab <- mean(abs((y_test_lasso_ab - y_pred_lasso_ab) / y_test_lasso_ab)) * 100
 
 
 # Variáveis selecionadas
 coef_lasso_ab <- coef(modelo_lasso_ab)
 variaveis_lasso_ab <- rownames(coef_lasso_ab)[coef_lasso_ab[, 1] != 0 & rownames(coef_lasso_ab) != "(Intercept)"]
 
+# ----- AIC e BIC  -----
+n <- length(y_train_lasso_ab)
+y_fitted_lasso_ab <- predict(modelo_lasso_ab, s = best_lambda_lasso_ab, newx = x_train_lasso_ab)
+rss_lasso_ab <- sum((y_train_lasso_ab - y_fitted_lasso_ab)^2)
+sigma2_lasso_ab <- rss_lasso_ab / n
+logLik_lasso_ab <- -n / 2 * (log(2 * pi) + log(sigma2_lasso_ab) + 1)
+
+df_lasso_ab <- modelo_lasso_ab$df
+aic_lasso_ab <- -2 * logLik_lasso_ab + 2 * df_lasso_ab
+bic_lasso_ab <- -2 * logLik_lasso_ab + log(n) * df_lasso_ab
+
 # Resultado
 cat("\nLasso SEM AREA_BASAL:\n")
 cat("R²:", R2_lasso_ab, 
     "\nRMSE:", rmse_lasso_ab, 
     "\nMAE:", mae_lasso_ab,
-    "\nMAPE =", mape_lasso_ab, "\n"
-    )
+    "\nMAPE =", mape_lasso_ab,
+    "\nAIC =", aic_lasso_ab,
+    "\nBIC =", bic_lasso_ab, "\n"
+)
 cat("Variáveis selecionadas:", paste(variaveis_lasso_ab, collapse = ", "), "\n")
+
+
+
+# Ajuste do modelo Lasso com sequência de lambdas
+lasso_seq_ab <- glmnet(x_train_lasso_ab, y_train_lasso_ab, alpha = 1, standardize = TRUE)
+
+# Extrair a matriz de coeficientes e os valores de lambda
+coefs_lasso_ab_matrix <- as.matrix(lasso_seq_ab$beta)
+lambdas_ab <- lasso_seq_ab$lambda
+log_lambda_ab <- log(lambdas_ab)
+
+# Transpor matriz para que cada linha seja um valor de lambda
+df_coefs_ab <- as.data.frame(t(coefs_lasso_ab_matrix))
+df_coefs_ab$log_lambda <- log_lambda_ab
+
+# Transformar para formato longo (tidy)
+df_long_lasso_ab <- df_coefs_ab %>%
+  pivot_longer(
+    cols = -log_lambda,
+    names_to = "Variavel",
+    values_to = "Coeficiente"
+  )
+
+# Plot do Lasso Trace Plot
+ggplot(df_long_lasso_ab, aes(x = log_lambda, 
+                             y = Coeficiente, 
+                             color = Variavel)) +
+  geom_line(size = 1.2, alpha = 0.9) +               # Linhas suaves e grossas
+  geom_vline(xintercept = log(best_lambda_lasso_ab), 
+             linetype = "dashed", color = "red") +
+  labs(
+    title = "Lasso Trace Plot",
+    subtitle = "Modelo Lasso (SEM AREA_BASAL)",
+    x = expression(log(lambda)),
+    y = "Coeficiente"
+  ) +
+  scale_color_brewer(palette = "Dark2") +  # Paleta de cores suave
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
+#-------------------------------------------------------------------------------#
+
 
 
 #--------------- Modelo Lasso (Sem DAP) --------------------------------------------#
@@ -659,21 +773,86 @@ modelo_lasso_dap <- glmnet(x_train_lasso_dap, y_train_lasso_dap,
                            lambda = best_lambda_lasso_dap,
                            standardize = TRUE)
 
-# Predição e métricas
+# Predição e Métricas
 y_pred_lasso_dap <- predict(modelo_lasso_dap, s = best_lambda_lasso_dap, newx = x_test_lasso_dap)
+
 R2_lasso_dap <- cor(y_test_lasso_dap, y_pred_lasso_dap)^2
 rmse_lasso_dap <- sqrt(mean((y_test_lasso_dap - y_pred_lasso_dap)^2))
 mae_lasso_dap <- mean(abs(y_test_lasso_dap - y_pred_lasso_dap))
+mape_lasso_dap <- mean(abs((y_test_lasso_dap - y_pred_lasso_dap) / y_test_lasso_dap)) * 100
 
-# Variáveis selecionadas
+
+
+
+# Variáveis Selecionadas
 coef_lasso_dap <- coef(modelo_lasso_dap)
 variaveis_lasso_dap <- rownames(coef_lasso_dap)[coef_lasso_dap[, 1] != 0 & rownames(coef_lasso_dap) != "(Intercept)"]
 
+# ----- AIC e BIC aproximados -----
+n <- length(y_train_lasso_dap)
+y_fitted_lasso_dap <- predict(modelo_lasso_dap, s = best_lambda_lasso_dap, newx = x_train_lasso_dap)
+rss_lasso_dap <- sum((y_train_lasso_dap - y_fitted_lasso_dap)^2)
+sigma2_lasso_dap <- rss_lasso_dap / n
+logLik_lasso_dap <- -n / 2 * (log(2 * pi) + log(sigma2_lasso_dap) + 1)
+
+df_lasso_dap <- modelo_lasso_dap$df  # número de coeficientes ≠ 0 (exclui intercepto)
+aic_lasso_dap <- -2 * logLik_lasso_dap + 2 * df_lasso_dap
+bic_lasso_dap <- -2 * logLik_lasso_dap + log(n) * df_lasso_dap
+
 # Resultado
 cat("\nLasso SEM DAP:\n")
-cat("R²:", R2_lasso_dap, "\nRMSE:", rmse_lasso_dap, "\nMAE:", mae_lasso_dap, "\n")
+cat("R²:", R2_lasso_dap, 
+    "\nRMSE:", rmse_lasso_dap, 
+    "\nMAE:", mae_lasso_dap,
+    "\nMAPE:", mape_lasso_dap,
+    "\nAIC:", aic_lasso_dap,
+    "\nBIC:", bic_lasso_dap, "\n")
 cat("Variáveis selecionadas:", paste(variaveis_lasso_dap, collapse = ", "), "\n")
 
+
+
+
+# Ajustar modelo Lasso para sequência de lambdas
+lasso_seq_dap <- glmnet(x_train_lasso_dap, y_train_lasso_dap, alpha = 1, standardize = TRUE)
+
+# Extrair matriz de coeficientes e vetor de lambdas
+coefs_matrix <- as.matrix(lasso_seq_dap$beta)
+lambdas <- lasso_seq_dap$lambda
+log_lambda <- log(lambdas)
+
+# Transpor para que cada linha seja um lambda e adicionar log_lambda
+df_coefs <- as.data.frame(t(coefs_matrix))
+df_coefs$log_lambda <- log_lambda
+
+# Converter para formato longo para ggplot2
+df_long <- df_coefs %>%
+  pivot_longer(cols = -log_lambda, names_to = "Variavel", values_to = "Coeficiente")
+
+# Plot com ggplot2
+ggplot(df_long, aes(x = log_lambda, 
+                    y = Coeficiente, 
+                    color = Variavel)) +
+  geom_line(size = 1.2, alpha = 0.9) +               # Linhas suaves e grossas
+  geom_vline(xintercept = log(best_lambda_lasso_dap), 
+             linetype = "dashed", color = "red") +
+  labs(
+    title = "Lasso Trace Plot",
+    subtitle = "Modelo Lasso (SEM DAP)",
+    x = expression(log(lambda)),
+    y = "Coeficiente"
+  ) +
+  scale_color_brewer(palette = "Dark2") +  # Paleta de cores suave
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
+#-------------------------------------------------------------------------------#
 
 
 #--------------- Modelo Lasso (Sem DAP + Area basal) --------------------------------------------#
@@ -704,20 +883,78 @@ modelo_lasso_dap_ab <- glmnet(x_train_lasso_dap_ab, y_train_lasso_dap_ab,
 
 # Predição e métricas
 y_pred_lasso_dap_ab <- predict(modelo_lasso_dap_ab, s = best_lambda_lasso_dap_ab, newx = x_test_lasso_dap_ab)
+
 R2_lasso_dap_ab <- cor(y_test_lasso_dap_ab, y_pred_lasso_dap_ab)^2
 rmse_lasso_dap_ab <- sqrt(mean((y_test_lasso_dap_ab - y_pred_lasso_dap_ab)^2))
 mae_lasso_dap_ab <- mean(abs(y_test_lasso_dap_ab - y_pred_lasso_dap_ab))
+mape_lasso_dap_ab <- mean(abs((y_test_lasso_dap_ab - y_pred_lasso_dap_ab) / y_test_lasso_dap_ab)) * 100
 
 # Variáveis selecionadas
 coef_lasso_dap_ab <- coef(modelo_lasso_dap_ab)
 variaveis_lasso_dap_ab <- rownames(coef_lasso_dap_ab)[coef_lasso_dap_ab[, 1] != 0 & rownames(coef_lasso_dap_ab) != "(Intercept)"]
 
+# ----- AIC e BIC aproximados -----
+n <- length(y_train_lasso_dap_ab)
+y_fitted_lasso_dap_ab <- predict(modelo_lasso_dap_ab, s = best_lambda_lasso_dap_ab, newx = x_train_lasso_dap_ab)
+rss_lasso_dap_ab <- sum((y_train_lasso_dap_ab - y_fitted_lasso_dap_ab)^2)
+sigma2_lasso_dap_ab <- rss_lasso_dap_ab / n
+logLik_lasso_dap_ab <- -n / 2 * (log(2 * pi) + log(sigma2_lasso_dap_ab) + 1)
+
+df_lasso_dap_ab <- modelo_lasso_dap_ab$df
+aic_lasso_dap_ab <- -2 * logLik_lasso_dap_ab + 2 * df_lasso_dap_ab
+bic_lasso_dap_ab <- -2 * logLik_lasso_dap_ab + log(n) * df_lasso_dap_ab
+
 # Resultado
-cat("\nLasso SEM DAP/AREA_BASAL:\n")
+cat("\nLasso SEM DAP e AREA_BASAL:\n")
 cat("R²:", R2_lasso_dap_ab, 
     "\nRMSE:", rmse_lasso_dap_ab, 
-    "\nMAE:", mae_lasso_dap_ab, "\n")
+    "\nMAE:", mae_lasso_dap_ab,
+    "\nMAPE:", mape_lasso_dap_ab,
+    "\nAIC:", aic_lasso_dap_ab,
+    "\nBIC:", bic_lasso_dap_ab, "\n")
 cat("Variáveis selecionadas:", paste(variaveis_lasso_dap_ab, collapse = ", "), "\n")
+
+
+# Ajustar modelo Lasso com sequência de lambdas para o trace plot
+lasso_seq_dap_ab <- glmnet(x_train_lasso_dap_ab, 
+                           y_train_lasso_dap_ab, 
+                           alpha = 1, 
+                           standardize = TRUE)
+
+# Extrair coeficientes e lambda
+coefs_matrix <- as.matrix(lasso_seq_dap_ab$beta)
+lambdas <- lasso_seq_dap_ab$lambda
+log_lambda <- log(lambdas)
+
+# Preparar dados para ggplot
+df_coefs <- as.data.frame(t(coefs_matrix))
+df_coefs$log_lambda <- log_lambda
+
+df_long <- df_coefs %>%
+  pivot_longer(cols = -log_lambda, names_to = "Variavel", values_to = "Coeficiente")
+
+# Plotar
+ggplot(df_long, aes(x = log_lambda, y = Coeficiente, color = Variavel)) +
+  geom_line(size = 1.2, alpha = 0.9) +               
+  geom_vline(xintercept = log(best_lambda_lasso_dap_ab), linetype = "dashed", color = "red") +
+  labs(
+    title = "Lasso Trace Plot",
+    subtitle = "Modelo Lasso (SEM DAP e AREA_BASAL)",
+    x = expression(log(lambda)),
+    y = "Coeficiente"
+  ) +
+  scale_color_brewer(palette = "Dark2") +  # Paleta de cores suave
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
+#-------------------------------------------------------------------------------#
 
 
 
@@ -743,8 +980,8 @@ train_control <- trainControl(method = "cv", number = 10)
 # Vamos testar 11 valores de alpha, de 0 (Ridge) a 1 (Lasso)
 # Para cada alpha, o caret testará automaticamente vários lambdas.
 tune_grid <- expand.grid(
-  alpha = seq(0, 1, length = 11),
-  lambda = seq(0.001, 0.2, length = 20) # Um grid de lambdas para testar
+  alpha = seq(0, 1, length = 21),
+  lambda = 10^seq(-4, 1, length = 500)         # Um grid de lambdas para testar
 )
 
 # 5. Treinar o Modelo Elastic Net
@@ -758,7 +995,7 @@ modelo_en <- train(
   method = "glmnet",         # Especifica o uso de Ridge, Lasso, Elastic Net
   trControl = train_control, # Aplica a validação cruzada
   tuneGrid = tune_grid,      # Fornece a grade de parâmetros para testar
-  preProcess = c("center", "scale") # Boa prática: centralizar e escalar os dados
+  preProcess = c("center", "scale", "BoxCox")                  
 )
 
 # 6. Ver os Melhores Parâmetros Encontrados
@@ -768,24 +1005,85 @@ print(modelo_en$bestTune)
 
 # 7. Avaliar o Modelo Final no Conjunto de Teste
 y_pred_en <- predict(modelo_en, newdata = dados_teste_en)
+
 R2_en <- cor(dados_teste_en$VOLUME, y_pred_en)^2
 rmse_en <- sqrt(mean((dados_teste_en$VOLUME - y_pred_en)^2))
 mae_en <- mean(abs(dados_teste_en$VOLUME - y_pred_en))
 mape_en <- mean(abs((dados_teste_en$VOLUME - y_pred_en) / dados_teste_en$VOLUME)) * 100
 
+# Extrair o modelo glmnet treinado com os melhores parâmetros
+modelo_en_glmnet <- modelo_en$finalModel
+
+# Obter o melhor lambda e alpha
+best_lambda_en <- modelo_en$bestTune$lambda
+best_alpha_en <- modelo_en$bestTune$alpha
+
+# Preparar matriz de preditores e resposta treino (com pré-processamento aplicado)
+x_train_en <- model.matrix(VOLUME ~ ., dados_treino_en)[, -1]
+y_train_en <- dados_treino_en$VOLUME
+
+# Prever no treino para calcular RSS
+y_fitted_en <- predict(modelo_en_glmnet, s = best_lambda_en, newx = x_train_en)
+
+n <- length(y_train_en)
+rss_en <- sum((y_train_en - y_fitted_en)^2)
+sigma2_en <- rss_en / n
+logLik_en <- -n / 2 * (log(2 * pi) + log(sigma2_en) + 1)
+
+# Graus de liberdade efetivos (número de coeficientes não nulos)
+df_en <- modelo_en_glmnet$df[which.min(abs(modelo_en_glmnet$lambda - best_lambda_en))]
+
+# AIC e BIC
+aic_en <- -2 * logLik_en + 2 * df_en
+bic_en <- -2 * logLik_en + log(n) * df_en
+
+
 # 8. Apresentar os Resultados Finais
-cat("\n--- Performance do Modelo Elastic Net Otimizado ---\n")
-cat("Melhor alpha:", modelo_en$bestTune$alpha, "\n")
-cat("Melhor lambda:", modelo_en$bestTune$lambda, "\n")
-cat("----------------------------------------\n")
-cat("R² =", R2_en, "\n")
-cat("RMSE =", rmse_en, "\n")
-cat("MAE =", mae_en, "\n")
-cat("MAPE =", mape_en, "%\n")
+cat("\n--- Desempenho do Modelo Elastic Net (com validação cruzada) ---\n")
+cat(sprintf("Melhor alpha   : %.3f\n", best_alpha_en))
+cat(sprintf("Melhor lambda  : %.5f\n", best_lambda_en))
+cat("---------------------------------------------------------------\n")
+cat(sprintf("R²    : %.4f\n", R2_en))
+cat(sprintf("RMSE  : %.4f\n", rmse_en))
+cat(sprintf("MAE   : %.4f\n", mae_en))
+cat(sprintf("MAPE  : %.2f%%\n", mape_en))
+cat(sprintf("AIC   : %.2f\n", aic_en))
+cat(sprintf("BIC   : %.2f\n", bic_en))
 
 
+# Extrair coeficientes para todos lambdas da sequência usada
+coefs_matrix <- as.matrix(modelo_en_glmnet$beta)
+lambdas <- modelo_en_glmnet$lambda
+log_lambda <- log(lambdas)
 
+# Preparar dados para ggplot
+df_coefs <- as.data.frame(t(coefs_matrix))
+df_coefs$log_lambda <- log_lambda
 
+df_long <- df_coefs %>%
+  pivot_longer(cols = -log_lambda, names_to = "Variavel", values_to = "Coeficiente")
+
+# Plot
+ggplot(df_long, aes(x = log_lambda, y = Coeficiente, color = Variavel)) +
+  geom_line(size = 1.2, alpha = 0.9) +    
+  geom_vline(xintercept = log(best_lambda_en), linetype = "dashed", color = "red") +
+  labs(
+    title = "Elastic Net Trace Plot",
+    subtitle = "Modelo Eslastic Net Completo",
+    x = expression(log(lambda)),
+    y = "Coeficiente"
+  ) +
+  scale_color_brewer(palette = "Dark2") +  # Paleta de cores suave
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 13, color = "gray40"),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "gray85")
+  )
 #------------------------------------------------------------------------------#
 
 
@@ -1086,6 +1384,132 @@ cat("R² =", R2_xgb_otimizado,
 
 
 #------------------------------------------------------------------------------#
+
+
+
+# Tabela comparativa dos modelos
+tabela_modelos <- data.frame(
+  Modelo   = c("Ridge Completo", 
+               "Ridge -AREA BASAL", 
+               "Ridge -DAP",
+               "Ridge -DAP e AREABASAL",
+               "Lasso Completo", 
+               "Lasso -DAP", 
+               "Lasso -AREA BASAL", 
+               "Lasso -DAP e AREABASAL",
+               "Elastic Net"),
+  R2       = c(R2_ridge, 
+               R2_ridge2, 
+               R2_dap,
+               R2_dap_ab,
+               R2_lasso,
+               R2_lasso_dap,
+               R2_lasso_ab, 
+               R2_lasso_dap_ab,
+               R2_en),
+  RMSE     = c(rmse_ridge, 
+               rmse_ridge2,
+               rmse_dap,
+               rmse_dap_ab,
+               rmse_lasso,
+               rmse_lasso_dap, 
+               rmse_lasso_ab, 
+               rmse_lasso_dap_ab,
+               rmse_en),
+  MAE      = c(mae_ridge,
+               mae_ridge2,
+               mae_dap, 
+               mae_dap_ab,
+               mae_lasso, 
+               mae_lasso_dap, 
+               mae_lasso_ab, 
+               mae_lasso_dap_ab,
+               mae_en),
+  MAPE     = c(mape_ridge,
+               mape_ridge2,
+               mape_dap, 
+               mape_dap_ab,
+               mape_lasso, 
+               mape_lasso_dap, 
+               mape_lasso_ab, 
+               mape_lasso_dap_ab,
+               mape_en),
+  AIC      = c(AIC_ridge, 
+               AIC_ridge2,
+               aic_ridge_dap, 
+               aic_ridge_dap_ab,
+               aic_lasso, 
+               aic_lasso_dap, 
+               aic_lasso_ab, 
+               aic_lasso_dap_ab,
+               aic_en),
+  BIC      = c(BIC_ridge,
+               BIC_ridge2,
+               bic_ridge_dap, 
+               bic_ridge_dap_ab,
+               bic_lasso, 
+               bic_lasso_dap, 
+               bic_lasso_ab, 
+               bic_lasso_dap_ab,
+               bic_en)
+)
+
+# Visualizar tabela ordenada por R² (opcional)
+tabela_modelos <- tabela_modelos[order(-tabela_modelos$R2), ]
+print(tabela_modelos)
+
+
+
+library(gt)
+
+# Tabela com estilo técnico
+tabela_modelos %>%
+  arrange(desc(R2)) %>%
+  gt() %>%
+  tab_header(
+    title = md("**Comparativo Técnico entre Modelos Ridge, Lasso e Elastic Net**"),
+    subtitle = "Avaliação com base em R², RMSE, MAE, MAPE, AIC e BIC"
+  ) %>%
+  fmt_number(
+    columns = where(is.numeric),
+    decimals = 4
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+    ),
+    locations = cells_column_labels(everything())
+  ) %>%
+  opt_table_outline()
+
+
+
+
+library(knitr)
+library(kableExtra)
+
+# Tabela ordenada por R²
+tabela_modelos <- tabela_modelos[order(-tabela_modelos$R2), ]
+
+# Exibir com formatação técnica
+kable(tabela_modelos, digits = 3, caption = "Comparativo de Modelos de Regressão Regularizada") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = FALSE, 
+                position = "center") %>%
+  row_spec(0, bold = TRUE, background = "#D3D3D3")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
